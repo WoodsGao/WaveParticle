@@ -1,0 +1,81 @@
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel FindAlives
+#pragma kernel ProcessQueue
+#pragma kernel UpdateAlives
+
+#define PI 3.141592653589793
+// Create a RenderTexture with enableRandomWrite flag and set it
+// with cs.SetTexture
+// RWTexture2D<float4> Result;
+
+RWStructuredBuffer<float4> _PositionBuffer;
+RWStructuredBuffer<float4> _DataBuffer;
+RWStructuredBuffer<float4> _QueueBuffer;
+AppendStructuredBuffer<uint> _AlivePool;
+AppendStructuredBuffer<uint> _DeadPool;
+ConsumeStructuredBuffer<uint> _AlivePoolConsume;
+ConsumeStructuredBuffer<uint> _DeadPoolConsume;
+
+float _DeltaTime, _SpreadDecay, _SpreadSpeed;
+float4 _WorldToClip;
+
+float2 GetClipPosFromWorld(float2 worldXZ)
+{
+    return worldXZ * _WorldToClip.xy + _WorldToClip.zw;
+}
+
+[numthreads(8,1,1)]
+void FindAlives (uint3 id : SV_DispatchThreadID)
+{
+    float4 position = _PositionBuffer[id.x];
+    float2 clipPos = GetClipPosFromWorld(position.xy);
+    float maxCoord = max(abs(clipPos.x), abs(clipPos.y));
+    if(maxCoord < 1 && position.z > 0.01)
+    {
+        _AlivePool.Append(id.x);
+    }
+    else
+    {
+        _DeadPool.Append(id.x);
+    }
+}
+
+[numthreads(8,1,1)]
+void ProcessQueue (uint3 id : SV_DispatchThreadID)
+{
+    uint index = _DeadPoolConsume.Consume();
+    float4 newItem = _QueueBuffer[id.x];
+    float speed = 1.0;
+    float theta = newItem.w;
+    _PositionBuffer[index] = float4(newItem.x, newItem.y, 1, theta);
+    _DataBuffer[index] = float4(newItem.x, newItem.y, 0, 1);
+}
+
+
+void UpdatePosition(uint index)
+{
+    float theta = _PositionBuffer[index].w;
+    float delta = _DataBuffer[index].z;
+    float2 moveVec = float2(cos(theta*2*PI), sin(theta*2*PI));
+    float2 center = _DataBuffer[index].xy;
+    float2 position = center + moveVec * delta * _SpreadSpeed;
+    float strength = 1 - delta * _SpreadDecay;
+    _PositionBuffer[index] = float4(position, strength, theta);
+}
+
+[numthreads(8,1,1)]
+void UpdateAlives (uint3 id : SV_DispatchThreadID)
+{
+    uint index = _AlivePoolConsume.Consume();
+    _DataBuffer[index].z += _DeltaTime;
+    UpdatePosition(index);
+    if(_DataBuffer[index].z > 0.2 * pow(2, _DataBuffer[index].w))
+    {
+        _DataBuffer[index].w += 1;
+        uint index1 = _DeadPoolConsume.Consume();
+
+        _PositionBuffer[index1].w = _PositionBuffer[index].w + 0.25*pow(0.5,_DataBuffer[index].w);
+        _DataBuffer[index1] =_DataBuffer[index];
+        UpdatePosition(index1);
+    }
+}
